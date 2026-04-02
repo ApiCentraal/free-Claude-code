@@ -316,6 +316,7 @@ async def messages(request: Request):
                                 if text:
                                     full_content += text
                                     yield f"data: {json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': text}})}\n\n"
+                                    yield ": keepalive\n\n"
                                 for tc in delta.get("tool_calls", []):
                                     idx = tc.get("index", 0)
                                     if idx not in tool_call_chunks:
