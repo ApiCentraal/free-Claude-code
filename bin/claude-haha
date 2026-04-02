@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="/home/azureuser/claude-code-haha"
+ROOT_DIR="$HOME/claude-code-haha"
 cd "$ROOT_DIR"
 
 # Find bun
