@@ -730,9 +730,9 @@ def test_api_connection() -> bool:
         import requests
         import json
 
-        # Test a simple chat completion
+        # Test a simple message (Anthropic API format via bridge)
         response = requests.post(
-            "http://127.0.0.1:8789/v1/chat/completions",
+            "http://127.0.0.1:8789/v1/messages",
             json={
                 "model": "claude-sonnet-4-6",
                 "messages": [{"role": "user", "content": "Say hello"}],
@@ -743,11 +743,11 @@ def test_api_connection() -> bool:
 
         if response.status_code == 200:
             data = response.json()
-            if "choices" in data:
-                print(f"  ✓ API response received from {data.get('model', 'unknown')}")
+            if "content" in data:
+                print(f"  ✓ API response received")
                 return True
             else:
-                print(f"  ✗ API response missing 'choices': {data.keys()}")
+                print(f"  ✗ API response missing 'content': {data.keys()}")
                 return False
         else:
             print(f"  ✗ API returned {response.status_code}: {response.text[:200]}")
