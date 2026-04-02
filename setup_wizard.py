@@ -724,6 +724,39 @@ WantedBy=multi-user.target
     sys.exit(1)
 
 
+def test_api_connection() -> bool:
+    """Test end-to-end API connection through bridge and keymaster."""
+    try:
+        import requests
+        import json
+
+        # Test a simple chat completion
+        response = requests.post(
+            "http://127.0.0.1:8789/v1/chat/completions",
+            json={
+                "model": "claude-sonnet-4-6",
+                "messages": [{"role": "user", "content": "Say hello"}],
+                "max_tokens": 10
+            },
+            timeout=30
+        )
+
+        if response.status_code == 200:
+            data = response.json()
+            if "choices" in data:
+                print(f"  ✓ API response received from {data.get('model', 'unknown')}")
+                return True
+            else:
+                print(f"  ✗ API response missing 'choices': {data.keys()}")
+                return False
+        else:
+            print(f"  ✗ API returned {response.status_code}: {response.text[:200]}")
+            return False
+    except Exception as e:
+        print(f"  ✗ API test failed: {e}")
+        return False
+
+
 def check_bridge_health() -> bool:
     """Check if bridge is responding."""
     try:
@@ -942,6 +975,13 @@ def main():
         print_colored("✓ Simple bridge is responding on port 8789.", Colors.GREEN)
     else:
         print_colored("Warning: Bridge may not be fully ready yet.", Colors.WARNING)
+
+    # STEP 7b: Test end-to-end API call
+    print_step(7, total_steps, "Test API Connection")
+    if test_api_connection():
+        print_colored("✓ API connection test passed.", Colors.GREEN)
+    else:
+        print_colored("Warning: API test failed. Claude may not work properly.", Colors.WARNING)
 
     # STEP 8: Final message and launch
     print_step(8, total_steps, "Complete & Launch Claude")
