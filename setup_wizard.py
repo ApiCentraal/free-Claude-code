@@ -774,15 +774,49 @@ def create_claude_symlink():
         os.environ['PATH'] = str(local_bin) + os.pathsep + os.environ.get('PATH', '')
     else:
         print_colored(f"Warning: Could not find claude-haha at {claude_haha}", Colors.WARNING)
-    """Launch the Claude TUI."""
-    home = Path.home()
-    claude_haha = home / "claude-code-haha" / "bin" / "claude-haha"
 
-    if claude_haha.exists():
-        os.execv(str(claude_haha), [str(claude_haha)])
-    else:
-        print_colored(f"Could not find claude-haha at {claude_haha}", Colors.FAIL)
-        sys.exit(1)
+
+def create_env_file():
+    """Create .env file pointing to the local bridge."""
+    home = Path.home()
+    project_dir = home / "claude-code-haha"
+    env_file = project_dir / ".env"
+
+    env_content = """# Claude Code Configuration - Local Bridge Mode
+# No authentication needed - uses local simple_bridge
+
+# Point to local bridge (simple_bridge.py on port 8789)
+ANTHROPIC_AUTH_TOKEN=local-bridge-mode
+ANTHROPIC_BASE_URL=http://127.0.0.1:8789
+
+# Model mapping (bridge converts these)
+ANTHROPIC_MODEL=claude-sonnet-4-6
+ANTHROPIC_DEFAULT_SONNET_MODEL=claude-sonnet-4-6
+ANTHROPIC_DEFAULT_OPUS_MODEL=claude-opus-4-6
+ANTHROPIC_DEFAULT_HAIKU_MODEL=claude-haiku-4-5
+
+# Disable telemetry and non-essential traffic
+DISABLE_TELEMETRY=1
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+
+# Long timeout for API calls
+API_TIMEOUT_MS=3000000
+
+# Bridge configuration
+KEYMASTER_URL=http://127.0.0.1:8787
+CDP_URL=http://localhost:9222
+"""
+
+    # Backup existing .env if it exists
+    if env_file.exists():
+        backup_path = env_file.parent / f".env.backup.{int(time.time())}"
+        shutil.copy2(env_file, backup_path)
+        print_colored(f"Backed up existing .env to {backup_path}", Colors.GREEN)
+
+    with open(env_file, 'w') as f:
+        f.write(env_content)
+
+    print_colored(f"✓ Created .env file at {env_file}", Colors.GREEN)
 
 
 def main():
@@ -911,6 +945,9 @@ def main():
 
     # STEP 8: Final message and launch
     print_step(8, total_steps, "Complete & Launch Claude")
+
+    # Create .env file for local bridge
+    create_env_file()
 
     # Create claude symlink
     create_claude_symlink()
