@@ -294,8 +294,8 @@ async def messages(request: Request):
         if stream:
             async def generate():
                 msg_id = "msg_bridge"
-                yield f"data: {json.dumps({'type': 'message_start', 'message': {'id': msg_id, 'type': 'message', 'role': 'assistant', 'content': [], 'model': anthropic_model}})}\n\n"
-                yield f"data: {json.dumps({'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                yield f"event: message_start\ndata: {json.dumps({'type': 'message_start', 'message': {'id': msg_id, 'type': 'message', 'role': 'assistant', 'content': [], 'model': anthropic_model}})}\n\n"
+                yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
 
                 full_content = ""
                 tool_call_chunks = {}
@@ -315,7 +315,7 @@ async def messages(request: Request):
                                 text = delta.get("content", "")
                                 if text:
                                     full_content += text
-                                    yield f"data: {json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': text}})}\n\n"
+                                    yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': text}})}\n\n"
                                     yield ": keepalive\n\n"
                                 for tc in delta.get("tool_calls", []):
                                     idx = tc.get("index", 0)
@@ -330,20 +330,20 @@ async def messages(request: Request):
 
                 # Always emit a text delta before stopping index 0 so Claude Code never sees null text
                 if not full_content:
-                    yield f"data: {json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': ' '}})}\n\n"
-                yield f"data: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
+                    yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': ' '}})}\n\n"
+                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
 
                 if tool_call_chunks:
                     for i, (idx, tc) in enumerate(tool_call_chunks.items(), start=1):
-                        yield f"data: {json.dumps({'type': 'content_block_start', 'index': i, 'content_block': {'type': 'tool_use', 'id': tc['id'], 'name': tc['name'], 'input': {}}})}\n\n"
-                        yield f"data: {json.dumps({'type': 'content_block_delta', 'index': i, 'delta': {'type': 'input_json_delta', 'partial_json': tc['arguments']}})}\n\n"
-                        yield f"data: {json.dumps({'type': 'content_block_stop', 'index': i})}\n\n"
+                        yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': i, 'content_block': {'type': 'tool_use', 'id': tc['id'], 'name': tc['name'], 'input': {}}})}\n\n"
+                        yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': i, 'delta': {'type': 'input_json_delta', 'partial_json': tc['arguments']}})}\n\n"
+                        yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': i})}\n\n"
                     stop_reason = "tool_use"
                 else:
                     stop_reason = "end_turn"
 
-                yield f"data: {json.dumps({'type': 'message_delta', 'delta': {'stop_reason': stop_reason}, 'usage': {'output_tokens': len(full_content) // 4}})}\n\n"
-                yield f"data: {json.dumps({'type': 'message_stop'})}\n\n"
+                yield f"event: message_delta\ndata: {json.dumps({'type': 'message_delta', 'delta': {'stop_reason': stop_reason}, 'usage': {'output_tokens': len(full_content) // 4}})}\n\n"
+                yield f"event: message_stop\ndata: {json.dumps({'type': 'message_stop'})}\n\n"
 
             return StreamingResponse(generate(), media_type="text/event-stream")
 
