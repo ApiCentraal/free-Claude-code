@@ -513,23 +513,46 @@ def install_playwright():
     print_colored("✓ Playwright Chromium installed.", Colors.GREEN)
 
 
+def get_current_user() -> str:
+    """Get the current username."""
+    return os.environ.get('SUDO_USER') or os.environ.get('USER') or os.environ.get('USERNAME') or 'root'
+
+
 def create_chrome_service(chrome_binary: str):
     """Create and start Chrome debug systemd service."""
+    user = get_current_user()
+    home = str(Path.home())
+
+    # Find chrome executable path
+    chrome_paths = [
+        f"/usr/bin/{chrome_binary}",
+        f"/usr/local/bin/{chrome_binary}",
+        shutil.which(chrome_binary) or f"/usr/bin/{chrome_binary}"
+    ]
+    chrome_path = None
+    for path in chrome_paths:
+        if path and os.path.exists(path):
+            chrome_path = path
+            break
+
+    if not chrome_path:
+        print_colored(f"Error: Could not find {chrome_binary} executable", Colors.FAIL)
+        sys.exit(1)
+
     service_content = f"""[Unit]
 Description=Chrome Remote Debugging on port 9222
 After=network.target
 
 [Service]
 Type=simple
-User=%i
-ExecStart=/usr/bin/{chrome_binary} \
-    --remote-debugging-port=9222 \
-    --no-first-run \
-    --no-default-browser-check \
-    --disable-gpu \
-    --headless
+User={user}
+Environment="HOME={home}"
+Environment="DISPLAY=:1"
+ExecStart={chrome_path} --remote-debugging-port=9222 --no-first-run --no-default-browser-check --disable-gpu --headless --disable-dev-shm-usage --no-sandbox
 Restart=always
 RestartSec=5
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
@@ -544,37 +567,61 @@ WantedBy=multi-user.target
     run_command(['cp', '/tmp/chrome-debug.service', str(service_path)], sudo=True, check=True)
     run_command(['systemctl', 'daemon-reload'], sudo=True, check=True)
     run_command(['systemctl', 'enable', 'chrome-debug'], sudo=True, check=True)
+
+    # Stop any existing instance
+    run_command(['systemctl', 'stop', 'chrome-debug'], sudo=True, check=False)
+    time.sleep(1)
+
+    # Start fresh
     run_command(['systemctl', 'start', 'chrome-debug'], sudo=True, check=True)
 
+    # Wait and verify
     time.sleep(3)
 
-    # Check status
-    code, out, _ = run_command(['systemctl', 'status', 'chrome-debug'], check=False)
-    if 'active (running)' in out:
+    # Check status with journalctl for better error reporting
+    code, out, err = run_command(['systemctl', 'is-active', 'chrome-debug'], check=False)
+    if code == 0 and 'active' in out:
         print_colored("✓ Chrome debug service is running on port 9222.", Colors.GREEN)
     else:
-        print_colored("Warning: Chrome debug service may not be running properly.", Colors.WARNING)
+        print_colored("Error: Chrome debug service failed to start", Colors.FAIL)
+        print_colored("Checking logs...", Colors.WARNING)
+        run_command(['journalctl', '-u', 'chrome-debug', '-n', '20', '--no-pager'], sudo=True, capture=False)
+        sys.exit(1)
 
 
 def create_bridge_service():
     """Create and start simple_bridge systemd service."""
+    user = get_current_user()
     home = Path.home()
     venv_python = get_venv_python()
     bridge_script = home / "claude-code-haha" / "simple_bridge.py"
 
+    # Verify paths exist
+    if not venv_python.exists():
+        print_colored(f"Error: Python venv not found at {venv_python}", Colors.FAIL)
+        sys.exit(1)
+
+    if not bridge_script.exists():
+        print_colored(f"Error: Bridge script not found at {bridge_script}", Colors.FAIL)
+        sys.exit(1)
+
     service_content = f"""[Unit]
 Description=Claude Code Simple Bridge
 After=network.target chrome-debug.service
+Wants=chrome-debug.service
 
 [Service]
 Type=simple
-User=%i
+User={user}
+Environment="HOME={home}"
+Environment="KEYMASTER_URL=http://127.0.0.1:8787"
+Environment="CDP_URL=http://localhost:9222"
 WorkingDirectory={home}/claude-code-haha
 ExecStart={venv_python} {bridge_script}
 Restart=always
 RestartSec=5
-Environment=KEYMASTER_URL=http://127.0.0.1:8787
-Environment=CDP_URL=http://localhost:9222
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
@@ -588,16 +635,29 @@ WantedBy=multi-user.target
     run_command(['cp', '/tmp/simple-bridge.service', str(service_path)], sudo=True, check=True)
     run_command(['systemctl', 'daemon-reload'], sudo=True, check=True)
     run_command(['systemctl', 'enable', 'simple-bridge'], sudo=True, check=True)
+
+    # Stop any existing instance
+    run_command(['systemctl', 'stop', 'simple-bridge'], sudo=True, check=False)
+    time.sleep(1)
+
+    # Start fresh
     run_command(['systemctl', 'start', 'simple-bridge'], sudo=True, check=True)
 
-    time.sleep(3)
+    # Wait and verify with health check
+    print("Waiting for bridge to start...")
+    time.sleep(5)
 
-    # Check status
-    code, out, _ = run_command(['systemctl', 'status', 'simple-bridge'], check=False)
-    if 'active (running)' in out:
-        print_colored("✓ Simple bridge service is running.", Colors.GREEN)
-    else:
-        print_colored("Warning: Simple bridge service may not be running properly.", Colors.WARNING)
+    # Try health check multiple times
+    for attempt in range(5):
+        if check_bridge_health():
+            print_colored("✓ Simple bridge service is running and responding.", Colors.GREEN)
+            return
+        time.sleep(2)
+
+    print_colored("Error: Bridge service failed health check", Colors.FAIL)
+    print_colored("Checking logs...", Colors.WARNING)
+    run_command(['journalctl', '-u', 'simple-bridge', '-n', '30', '--no-pager'], sudo=True, capture=False)
+    sys.exit(1)
 
 
 def check_bridge_health() -> bool:
