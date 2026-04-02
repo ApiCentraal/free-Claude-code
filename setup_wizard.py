@@ -647,7 +647,7 @@ def main():
         "I don't have valuable work — continue"
     ])
 
-    if "have valuable work" in choice:
+    if choice.startswith("I have valuable work"):
         print_colored("\nWizard paused. Please save your work and re-run this wizard when ready.", Colors.CYAN)
         print_colored("Command to re-run: python3 ~/claude-code-haha/setup_wizard.py", Colors.CYAN)
         sys.exit(0)
