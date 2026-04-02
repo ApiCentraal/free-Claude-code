@@ -734,7 +734,46 @@ def check_bridge_health() -> bool:
         return False
 
 
-def launch_claude():
+def create_claude_symlink():
+    """Create symlink for 'claude' command in ~/.local/bin."""
+    home = Path.home()
+    local_bin = home / ".local" / "bin"
+    claude_haha = home / "claude-code-haha" / "bin" / "claude-haha"
+    claude_link = local_bin / "claude"
+
+    # Create ~/.local/bin if it doesn't exist
+    local_bin.mkdir(parents=True, exist_ok=True)
+
+    # Remove existing symlink if it exists
+    if claude_link.is_symlink():
+        claude_link.unlink()
+
+    # Create the symlink
+    if claude_haha.exists():
+        claude_link.symlink_to(claude_haha)
+        print_colored(f"✓ Created 'claude' command at {claude_link}", Colors.GREEN)
+
+        # Add ~/.local/bin to PATH if not already there
+        shell_profiles = [
+            home / ".bashrc",
+            home / ".zshrc",
+            home / ".profile",
+        ]
+
+        path_export = '\n# Local bin\nexport PATH="$HOME/.local/bin:$PATH"\n'
+
+        for profile in shell_profiles:
+            if profile.exists():
+                with open(profile, 'r') as f:
+                    content = f.read()
+                if '.local/bin' not in content:
+                    with open(profile, 'a') as f:
+                        f.write(path_export)
+
+        # Add to current PATH
+        os.environ['PATH'] = str(local_bin) + os.pathsep + os.environ.get('PATH', '')
+    else:
+        print_colored(f"Warning: Could not find claude-haha at {claude_haha}", Colors.WARNING)
     """Launch the Claude TUI."""
     home = Path.home()
     claude_haha = home / "claude-code-haha" / "bin" / "claude-haha"
@@ -872,6 +911,9 @@ def main():
 
     # STEP 8: Final message and launch
     print_step(8, total_steps, "Complete & Launch Claude")
+
+    # Create claude symlink
+    create_claude_symlink()
 
     print_colored("""
 ✅ Everything is set up!
