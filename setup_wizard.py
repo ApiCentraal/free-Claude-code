@@ -42,7 +42,7 @@ def print_step(step_num: int, total: int, description: str):
     print()
 
 
-def run_command(cmd: List[str], capture: bool = True, check: bool = True, sudo: bool = False) -> Tuple[int, str, str]:
+def run_command(cmd: List[str], capture: bool = True, check: bool = True, sudo: bool = False, cwd: str = None) -> Tuple[int, str, str]:
     """Run a shell command and return exit code, stdout, stderr."""
     if sudo and os.geteuid() != 0:
         cmd = ['sudo'] + cmd
@@ -53,11 +53,12 @@ def run_command(cmd: List[str], capture: bool = True, check: bool = True, sudo: 
                 cmd,
                 capture_output=True,
                 text=True,
-                check=False
+                check=False,
+                cwd=cwd
             )
             return result.returncode, result.stdout, result.stderr
         else:
-            result = subprocess.run(cmd, check=check)
+            result = subprocess.run(cmd, check=check, cwd=cwd)
             return result.returncode, "", ""
     except Exception as e:
         return 1, "", str(e)
