@@ -888,14 +888,14 @@ Quick Keymaster commands:
 - keymaster health — Health check
 - keymaster keys — List keys
 - keymaster logs — Follow logs
+- keymaster detailed-log
 - keymaster cooldowns — Show rate-limited keys
 - keymaster reset — Clear all cooldowns
 
-Starting Claude Code now...
+To launch claude simply run "claude"
 """, Colors.GREEN + Colors.BOLD)
 
-    time.sleep(2)
-    launch_claude()
+    sys.exit(0)
 
 
 if __name__ == "__main__":
