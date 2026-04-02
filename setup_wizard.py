@@ -118,6 +118,55 @@ def get_venv_pip() -> Path:
     return venv / "bin" / "pip"
 
 
+def install_bun():
+    """Install Bun if not already installed."""
+    bun_path = Path.home() / ".bun" / "bin" / "bun"
+
+    if bun_path.exists():
+        print_colored(f"Bun already installed at {bun_path}", Colors.GREEN)
+        return
+
+    print("Installing Bun...")
+
+    # Install unzip if needed
+    run_command(['apt-get', 'update'], sudo=True, check=False)
+    run_command(['apt-get', 'install', '-y', 'unzip', 'curl'], sudo=True, check=True)
+
+    # Install Bun
+    install_cmd = 'curl -fsSL https://bun.sh/install | bash'
+    result = subprocess.run(install_cmd, shell=True, capture_output=True, text=True)
+
+    if result.returncode != 0:
+        print_colored(f"Failed to install Bun: {result.stderr}", Colors.FAIL)
+        sys.exit(1)
+
+    print_colored("Bun installed successfully.", Colors.GREEN)
+
+    # Add to PATH for current session
+    bun_bin = str(Path.home() / ".bun" / "bin")
+    os.environ['PATH'] = bun_bin + os.pathsep + os.environ.get('PATH', '')
+
+    # Add to shell profiles
+    shell_profiles = [
+        Path.home() / ".bashrc",
+        Path.home() / ".zshrc",
+        Path.home() / ".profile",
+    ]
+
+    path_export = f'\n# Bun\nexport PATH="$HOME/.bun/bin:$PATH"\n'
+
+    for profile in shell_profiles:
+        if profile.exists():
+            with open(profile, 'r') as f:
+                content = f.read()
+            if '.bun/bin' not in content:
+                with open(profile, 'a') as f:
+                    f.write(path_export)
+                print(f"Added Bun to PATH in {profile}")
+
+    print_colored("Bun added to PATH. Run 'source ~/.bashrc' or restart your shell.", Colors.GREEN)
+
+
 def install_dependencies():
     """Install required Python packages into venv."""
     pip = get_venv_pip()
@@ -128,6 +177,20 @@ def install_dependencies():
         print_colored(f"Failed to install dependencies: {err}", Colors.FAIL)
         sys.exit(1)
     print_colored("Dependencies installed successfully.", Colors.GREEN)
+
+    # Install Bun
+    install_bun()
+
+    # Verify Bun is in PATH
+    bun_check = shutil.which('bun')
+    if not bun_check:
+        # Try the default location
+        bun_path = Path.home() / ".bun" / "bin" / "bun"
+        if bun_path.exists():
+            os.environ['PATH'] = str(bun_path.parent) + os.pathsep + os.environ.get('PATH', '')
+            print_colored(f"Using Bun from {bun_path}", Colors.GREEN)
+        else:
+            print_colored("Warning: Bun not found in PATH after installation", Colors.WARNING)
 
 
 def wipe_claude_installation():
@@ -773,6 +836,23 @@ def main():
             sys.exit(1)
 
         print_colored("✓ Keymaster is healthy and running on port 8787.", Colors.GREEN)
+
+    # STEP 5b: Install Bun dependencies
+    print_step(5, total_steps, "Install Bun Dependencies")
+    home = Path.home()
+    project_dir = home / "claude-code-haha"
+    bun_path = home / ".bun" / "bin" / "bun"
+
+    if bun_path.exists():
+        os.chdir(project_dir)
+        print("Running bun install...")
+        result = subprocess.run([str(bun_path), 'install'], capture_output=True, text=True)
+        if result.returncode == 0:
+            print_colored("✓ Bun dependencies installed.", Colors.GREEN)
+        else:
+            print_colored(f"Warning: bun install had issues: {result.stderr}", Colors.WARNING)
+    else:
+        print_colored("Warning: Bun not found, skipping bun install", Colors.WARNING)
 
     # STEP 6: Install Chrome
     print_step(6, total_steps, "Install Chrome & Start Debug Port")
