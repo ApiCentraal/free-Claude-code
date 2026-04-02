@@ -10,7 +10,7 @@ export function getTokenUsage(message: Message): Usage | undefined {
     'usage' in message.message &&
     !(
       message.message.content[0]?.type === 'text' &&
-      SYNTHETIC_MESSAGES.has(message.message.content[0].text)
+      SYNTHETIC_MESSAGES.has(message.message.content[0]?.text)
     ) &&
     message.message.model !== SYNTHETIC_MODEL
   ) {
@@ -186,7 +186,7 @@ export function getAssistantMessageContentLength(
   let contentLength = 0
   for (const block of message.message.content) {
     if (block.type === 'text') {
-      contentLength += block.text.length
+      contentLength += block.text?.length ?? 0
     } else if (block.type === 'thinking') {
       contentLength += block.thinking.length
     } else if (block.type === 'redacted_thinking') {

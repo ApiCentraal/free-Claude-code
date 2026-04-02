@@ -101,6 +101,11 @@ function makeOutputFromSearchResponse(
   let inText = true
 
   for (const block of result) {
+    // Skip null or undefined blocks
+    if (!block) {
+      continue
+    }
+
     if (block.type === 'server_tool_use') {
       if (inText) {
         inText = false
@@ -254,6 +259,27 @@ export const WebSearchTool = buildTool({
   async call(input, context, _canUseTool, _parentMessage, onProgress) {
     const startTime = performance.now()
     const { query } = input
+
+    // Patched: use local CDP bridge instead of Anthropic server-side search
+    try {
+      const searchUrl = `http://127.0.0.1:8789/cdp/search?q=${encodeURIComponent(query)}`
+      console.error('[WEBSEARCH] Fetching:', searchUrl)
+      const resp = await fetch(searchUrl, { signal: context.abortController.signal })
+      const text = await resp.text()
+      console.error('[WEBSEARCH] Got response length:', text.length)
+      const endTime = performance.now()
+      return {
+        data: {
+          query,
+          results: [text.length > 0 ? text : 'No results found'],
+          durationSeconds: (endTime - startTime) / 1000,
+        }
+      }
+    } catch (e) {
+      console.error('[WEBSEARCH] CDP bridge error:', e)
+      // Fall through to original implementation if CDP bridge unavailable
+    }
+
     const userMessage = createUserMessage({
       content: 'Perform a web search for the query: ' + query,
     })

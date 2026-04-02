@@ -198,7 +198,7 @@ function computePerToolHashes(
 function getSystemCharCount(system: TextBlockParam[]): number {
   let total = 0
   for (const block of system) {
-    total += block.text.length
+    total += block.text?.length ?? 0
   }
   return total
 }

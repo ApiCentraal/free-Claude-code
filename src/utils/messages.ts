@@ -314,7 +314,7 @@ export function isSyntheticMessage(message: Message): boolean {
     message.type !== 'system' &&
     Array.isArray(message.message.content) &&
     message.message.content[0]?.type === 'text' &&
-    SYNTHETIC_MESSAGES.has(message.message.content[0].text)
+    SYNTHETIC_MESSAGES.has(message.message.content[0]?.text)
   )
 }
 
@@ -713,9 +713,10 @@ export function isNotEmptyMessage(message: Message): boolean {
   }
 
   return (
-    message.message.content[0]!.text.trim().length > 0 &&
-    message.message.content[0]!.text !== NO_CONTENT_MESSAGE &&
-    message.message.content[0]!.text !== INTERRUPT_MESSAGE_FOR_TOOL_USE
+    !!message.message.content[0]?.text &&
+    message.message.content[0].text.trim().length > 0 &&
+    message.message.content[0].text !== NO_CONTENT_MESSAGE &&
+    message.message.content[0].text !== INTERRUPT_MESSAGE_FOR_TOOL_USE
   )
 }
 
@@ -2719,9 +2720,9 @@ export function normalizeContentFromAPI(
         }
       }
       case 'text':
-        if (contentBlock.text.trim().length === 0) {
+        if (!contentBlock || !contentBlock.text || contentBlock.text.trim().length === 0) {
           logEvent('tengu_model_whitespace_response', {
-            length: contentBlock.text.length,
+            length: contentBlock?.text?.length ?? 0,
           })
         }
         // Return the block as-is to preserve exact content for prompt caching.

@@ -103,9 +103,9 @@ async function truncateContentBlocks(
       const remainingChars = maxChars - currentChars
       if (remainingChars <= 0) break
 
-      if (block.text.length <= remainingChars) {
+      if ((block.text?.length ?? 0) <= remainingChars) {
         result.push(block)
-        currentChars += block.text.length
+        currentChars += block.text?.length ?? 0
       } else {
         result.push({ type: 'text', text: block.text.slice(0, remainingChars) })
         break

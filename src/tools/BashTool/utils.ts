@@ -207,7 +207,7 @@ export function createContentSummary(content: ContentBlockParam[]): string {
       textCount++
       // Include first 200 chars of text blocks for context
       const preview = block.text.slice(0, 200)
-      parts.push(preview + (block.text.length > 200 ? '...' : ''))
+      parts.push(preview + ((block.text?.length ?? 0) > 200 ? '...' : ''))
     }
   }
 

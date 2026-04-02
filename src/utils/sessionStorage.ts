@@ -2438,7 +2438,7 @@ function hasVisibleAssistantContent(message: TranscriptMessage): boolean {
     block =>
       block.type === 'text' &&
       typeof block.text === 'string' &&
-      block.text.trim().length > 0,
+      block.text?.trim().length > 0,
   )
 }
 
