@@ -2,3 +2,6 @@
 .env.*
 !.env.example
 node_modules
+Pulsh.code-workspace
+docs/pulsh-overzetlijst-vanuit-D-drive.md
+docs/pulsh-statusrapport-2026-04-10.md

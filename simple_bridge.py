@@ -10,13 +10,21 @@ import re
 import uuid
 import asyncio
 import websockets
+from urllib.parse import quote_plus, urlparse
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse, PlainTextResponse
 import httpx
 
-KEYMASTER_URL = os.getenv("KEYMASTER_URL", "http://127.0.0.1:8787")
-CDP_URL = os.getenv("CDP_URL", "http://localhost:9222")
+KEYMASTER_URL = os.getenv("KEYMASTER_URL", "http://127.0.0.1:8787").rstrip("/")
+CDP_URL = os.getenv("CDP_URL", "http://localhost:9222").rstrip("/")
+CONNECT_TIMEOUT_S = float(os.getenv("BRIDGE_CONNECT_TIMEOUT_S", "30"))
+REQUEST_TIMEOUT_S = float(os.getenv("BRIDGE_REQUEST_TIMEOUT_S", "600"))
+READ_TIMEOUT_S = float(os.getenv("BRIDGE_READ_TIMEOUT_S", "300"))
+WRITE_TIMEOUT_S = float(os.getenv("BRIDGE_WRITE_TIMEOUT_S", "300"))
+CDP_READY_TIMEOUT_S = float(os.getenv("BRIDGE_CDP_READY_TIMEOUT_S", "12"))
+CDP_READY_POLL_S = float(os.getenv("BRIDGE_CDP_READY_POLL_S", "0.5"))
+STREAM_EMPTY_TEXT = os.getenv("BRIDGE_EMPTY_STREAM_TEXT", " ")
 
 MODEL_MAP = {
     "claude-sonnet-4-6": "moonshotai/kimi-k2.5",
@@ -57,6 +65,35 @@ BRIDGE_TOOL_NAMES = {t["name"] for t in WEB_TOOLS}
 http_client: httpx.AsyncClient = None
 
 
+def _is_valid_url(url: str) -> bool:
+    try:
+        parsed = urlparse(url.strip())
+        return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+    except Exception:
+        return False
+
+
+def _error_payload(message: str, detail=None):
+    payload = {"error": "Bridge Error", "message": message}
+    if detail is not None:
+        payload["detail"] = detail
+    return payload
+
+
+def _extract_error_detail(resp: httpx.Response):
+    try:
+        return resp.json()
+    except Exception:
+        return {"raw": resp.text[:2000]}
+
+
+async def _ensure_upstream_success(resp: httpx.Response, context: str):
+    if resp.status_code < 400:
+        return
+    detail = _extract_error_detail(resp)
+    raise RuntimeError(f"{context} failed ({resp.status_code}): {detail}")
+
+
 async def cdp_command(ws, method, params=None):
     cmd_id = int(uuid.uuid4().int % 100000)
     cmd = {"id": cmd_id, "method": method, "params": params or {}}
@@ -67,17 +104,37 @@ async def cdp_command(ws, method, params=None):
             return msg.get("result", {})
 
 
+async def cdp_wait_ready(ws, timeout_s: float = CDP_READY_TIMEOUT_S):
+    waited = 0.0
+    while waited < timeout_s:
+        result = await cdp_command(ws, "Runtime.evaluate", {
+            "expression": "document.readyState",
+            "returnByValue": True
+        })
+        state = result.get("result", {}).get("value", "")
+        if state in ("interactive", "complete"):
+            return
+        await asyncio.sleep(CDP_READY_POLL_S)
+        waited += CDP_READY_POLL_S
+
+
 async def cdp_fetch(url: str, max_chars: int = 15000) -> str:
+    if not _is_valid_url(url):
+        return f"Error fetching {url}: invalid URL"
+
+    tab = None
     try:
         resp = await http_client.put(f"{CDP_URL}/json/new")
+        await _ensure_upstream_success(resp, "CDP open tab")
         tab = resp.json()
         ws_url = tab["webSocketDebuggerUrl"]
 
         async with websockets.connect(ws_url, max_size=10*1024*1024) as ws:
             await cdp_command(ws, "Page.enable")
+            await cdp_command(ws, "Runtime.enable")
             await cdp_command(ws, "Page.navigate", {"url": url})
-
-            await asyncio.sleep(4)
+            await cdp_wait_ready(ws)
+            await asyncio.sleep(0.8)
 
             result = await cdp_command(ws, "Runtime.evaluate", {
                 "expression": """(function() {
@@ -89,27 +146,39 @@ async def cdp_fetch(url: str, max_chars: int = 15000) -> str:
                 "returnByValue": True
             })
 
-            await http_client.get(f"{CDP_URL}/json/close/{tab['id']}")
             text = result.get("result", {}).get("value", "")
             text = re.sub(r'\n{3,}', '\n\n', text).strip()
             return text[:max_chars]
 
     except Exception as e:
         return f"Error fetching {url}: {e}"
+    finally:
+        if tab and tab.get("id"):
+            try:
+                await http_client.get(f"{CDP_URL}/json/close/{tab['id']}")
+            except Exception:
+                pass
 
 
 async def cdp_search(query: str, max_chars: int = 10000) -> str:
-    search_url = f"https://html.duckduckgo.com/html/?q={query.replace(' ', '+')}"
+    query = query.strip()
+    if not query:
+        return "Error searching '': empty query"
+    search_url = f"https://html.duckduckgo.com/html/?q={quote_plus(query)}"
+
+    tab = None
     try:
         resp = await http_client.put(f"{CDP_URL}/json/new")
+        await _ensure_upstream_success(resp, "CDP open tab")
         tab = resp.json()
         ws_url = tab["webSocketDebuggerUrl"]
 
         async with websockets.connect(ws_url, max_size=10*1024*1024) as ws:
             await cdp_command(ws, "Page.enable")
+            await cdp_command(ws, "Runtime.enable")
             await cdp_command(ws, "Page.navigate", {"url": search_url})
-
-            await asyncio.sleep(3)
+            await cdp_wait_ready(ws)
+            await asyncio.sleep(0.6)
 
             result = await cdp_command(ws, "Runtime.evaluate", {
                 "expression": """(function() {
@@ -132,7 +201,6 @@ async def cdp_search(query: str, max_chars: int = 10000) -> str:
                 "returnByValue": True
             })
 
-            await http_client.get(f"{CDP_URL}/json/close/{tab['id']}")
             raw = result.get("result", {}).get("value", "[]")
             try:
                 items = json.loads(raw)
@@ -145,6 +213,12 @@ async def cdp_search(query: str, max_chars: int = 10000) -> str:
 
     except Exception as e:
         return f"Error searching '{query}': {e}"
+    finally:
+        if tab and tab.get("id"):
+            try:
+                await http_client.get(f"{CDP_URL}/json/close/{tab['id']}")
+            except Exception:
+                pass
 
 
 async def execute_tool(name: str, arguments: dict) -> str:
@@ -160,7 +234,7 @@ async def execute_tool(name: str, arguments: dict) -> str:
 async def lifespan(app: FastAPI):
     global http_client
     http_client = httpx.AsyncClient(
-        timeout=httpx.Timeout(600.0, connect=30.0, read=300.0, write=300.0, pool=300.0),
+        timeout=httpx.Timeout(REQUEST_TIMEOUT_S, connect=CONNECT_TIMEOUT_S, read=READ_TIMEOUT_S, write=WRITE_TIMEOUT_S, pool=REQUEST_TIMEOUT_S),
         limits=httpx.Limits(max_connections=200, max_keepalive_connections=50),
         follow_redirects=True
     )
@@ -177,7 +251,6 @@ async def cdp_search_endpoint(q: str = ""):
     if not q:
         return JSONResponse(content={"error": "no query"}, status_code=400)
     result = await cdp_search(q)
-    from fastapi.responses import PlainTextResponse
     return PlainTextResponse(result)
 
 @app.get("/cdp/fetch")
@@ -185,12 +258,24 @@ async def cdp_fetch_endpoint(url: str = ""):
     if not url:
         return JSONResponse(content={"error": "no url"}, status_code=400)
     result = await cdp_fetch(url)
-    from fastapi.responses import PlainTextResponse
     return PlainTextResponse(result)
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "keymaster": KEYMASTER_URL}
+    keymaster_ok = False
+    detail = None
+    try:
+        resp = await http_client.get(f"{KEYMASTER_URL}/health")
+        keymaster_ok = resp.status_code < 500
+        detail = _extract_error_detail(resp)
+    except Exception as e:
+        detail = str(e)
+    return {
+        "status": "ok" if keymaster_ok else "degraded",
+        "keymaster": KEYMASTER_URL,
+        "keymaster_reachable": keymaster_ok,
+        "detail": detail
+    }
 
 
 def convert_messages(body):
@@ -202,6 +287,8 @@ def convert_messages(body):
         msgs.append({"role": "system", "content": system})
 
     for msg in body.get("messages", []):
+        if not isinstance(msg, dict):
+            continue
         role = msg.get("role", "user")
         content = msg.get("content", "")
 
@@ -257,7 +344,11 @@ def build_openai_body(body, anthropic_model):
     }
 
     all_tools = list(body.get("tools", []))
-    existing_names = {t["name"] for t in all_tools}
+    existing_names = {
+        t.get("name")
+        for t in all_tools
+        if isinstance(t, dict) and isinstance(t.get("name"), str)
+    }
     for wt in WEB_TOOLS:
         if wt["name"] not in existing_names:
             all_tools.append(wt)
@@ -283,6 +374,8 @@ def build_openai_body(body, anthropic_model):
 async def messages(request: Request):
     try:
         body = await request.json()
+        if not isinstance(body, dict):
+            return JSONResponse(status_code=400, content=_error_payload("Invalid JSON body"))
         anthropic_model = body.get("model", "sonnet")
         stream = body.get("stream", False)
 
@@ -300,37 +393,51 @@ async def messages(request: Request):
                 full_content = ""
                 tool_call_chunks = {}
 
-                async with http_client.stream("POST",
-                                              f"{KEYMASTER_URL}/v1/chat/completions",
-                                              json=openai_body,
-                                              headers=headers) as resp:
-                    async for line in resp.aiter_lines():
-                        if line.startswith("data: "):
-                            data = line[6:]
-                            if data == "[DONE]":
-                                break
-                            try:
-                                chunk = json.loads(data)
-                                delta = chunk["choices"][0].get("delta", {})
-                                text = delta.get("content", "")
-                                if text:
-                                    full_content += text
-                                    yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': text}})}\n\n"
-                                    yield ": keepalive\n\n"
-                                for tc in delta.get("tool_calls", []):
-                                    idx = tc.get("index", 0)
-                                    if idx not in tool_call_chunks:
-                                        tool_call_chunks[idx] = {"id": tc.get("id", f"call_{idx}"), "name": "", "arguments": ""}
-                                    if tc.get("function", {}).get("name"):
-                                        tool_call_chunks[idx]["name"] += tc["function"]["name"]
-                                    if tc.get("function", {}).get("arguments"):
-                                        tool_call_chunks[idx]["arguments"] += tc["function"]["arguments"]
-                            except Exception as parse_err:
-                                print(f"[BRIDGE] Parse error: {parse_err} raw={data[:200]}", file=__import__('sys').stderr, flush=True)
+                try:
+                    async with http_client.stream("POST",
+                                                  f"{KEYMASTER_URL}/v1/chat/completions",
+                                                  json=openai_body,
+                                                  headers=headers) as resp:
+                        if resp.status_code >= 400:
+                            error_text = await resp.aread()
+                            detail = error_text.decode("utf-8", errors="replace")
+                            raise RuntimeError(
+                                f"Keymaster stream failed ({resp.status_code}): {detail[:500]}"
+                            )
+                        async for line in resp.aiter_lines():
+                            if line.startswith("data: "):
+                                data = line[6:]
+                                if data == "[DONE]":
+                                    break
+                                try:
+                                    chunk = json.loads(data)
+                                    choices = chunk.get("choices", [])
+                                    if not choices:
+                                        continue
+                                    delta = choices[0].get("delta", {})
+                                    text = delta.get("content", "")
+                                    if text:
+                                        full_content += text
+                                        yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': text}})}\n\n"
+                                        yield ": keepalive\n\n"
+                                    for tc in delta.get("tool_calls", []):
+                                        idx = tc.get("index", 0)
+                                        if idx not in tool_call_chunks:
+                                            tool_call_chunks[idx] = {"id": tc.get("id", f"call_{idx}"), "name": "", "arguments": ""}
+                                        if tc.get("function", {}).get("name"):
+                                            tool_call_chunks[idx]["name"] += tc["function"]["name"]
+                                        if tc.get("function", {}).get("arguments"):
+                                            tool_call_chunks[idx]["arguments"] += tc["function"]["arguments"]
+                                except Exception as parse_err:
+                                    print(f"[BRIDGE] Parse error: {parse_err} raw={data[:200]}", file=__import__('sys').stderr, flush=True)
+                except Exception as stream_err:
+                    fallback = f"[Bridge stream error] {stream_err}"
+                    full_content += fallback
+                    yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': fallback}})}\n\n"
 
                 # Always emit a text delta before stopping index 0 so Claude Code never sees null text
                 if not full_content:
-                    yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': ' '}})}\n\n"
+                    yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': STREAM_EMPTY_TEXT}})}\n\n"
                 yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
 
                 if tool_call_chunks:
@@ -351,7 +458,10 @@ async def messages(request: Request):
             resp = await http_client.post(f"{KEYMASTER_URL}/v1/chat/completions",
                                           json=openai_body,
                                           headers=headers)
+            await _ensure_upstream_success(resp, "Keymaster non-stream request")
             openai_resp = resp.json()
+            if "choices" not in openai_resp or not openai_resp["choices"]:
+                raise RuntimeError(f"Invalid upstream response: {openai_resp}")
             message = openai_resp["choices"][0]["message"]
             content_blocks = []
 
@@ -386,6 +496,7 @@ async def messages(request: Request):
                     followup_body = {**openai_body, "messages": new_messages, "stream": False}
                     followup_resp = await http_client.post(f"{KEYMASTER_URL}/v1/chat/completions",
                                                            json=followup_body, headers=headers)
+                    await _ensure_upstream_success(followup_resp, "Keymaster tool follow-up request")
                     final_text = followup_resp.json()["choices"][0]["message"].get("content", "")
                     return JSONResponse(content={
                         "id": openai_resp.get("id", "msg_bridge"),
@@ -433,7 +544,7 @@ async def messages(request: Request):
     except Exception as e:
         import traceback
         print(f"[BRIDGE ERROR] {e}\n{traceback.format_exc()}", file=sys.stderr, flush=True)
-        return JSONResponse(status_code=500, content={"error": "Bridge Error", "message": str(e)})
+        return JSONResponse(status_code=500, content=_error_payload(str(e)))
 
 
 if __name__ == "__main__":
